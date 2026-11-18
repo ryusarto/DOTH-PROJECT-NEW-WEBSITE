@@ -88,6 +88,15 @@
 @media(max-width:520px){.stage-fallback img{top:3%;height:84%;width:74%}.stage-fallback img.fallback-top{top:19%;height:31%;width:49%}.stage-fallback img.fallback-bottom{top:49%;height:37%;width:48%}.stage-fallback img.fallback-hat{top:8%;height:16%;width:28%}.stage-fallback .fallback-note{bottom:67px;font-size:7px}}
 .archive-poster{position:absolute;inset:6% 15%;width:70%;height:88%;object-fit:contain;pointer-events:none;filter:drop-shadow(9px 15px 15px rgba(15,17,12,.2));z-index:0}
 
+/* V7 HUD: um único sistema de escolha (o configurador do painel) e uma única barra de
+   câmera, centralizada sob o manequim; o palco 3D termina antes do painel direito. */
+.stage-badge,.stage-hint,.stage-bottom-note{display:none}
+.stage-controls,.stage-bottom-note{z-index:5}
+.stage-controls button[aria-pressed="true"]{background:var(--accent)}
+@media(min-width:901px){.stage{right:calc(3.1% + min(24%,335px) + 14px)}}
+@media(min-width:901px) and (max-width:1240px){.stage{right:calc(2.5% + 27% + 14px)}.left-bottom,.hero-meta{display:none}}
+@media(max-width:620px){.stage-controls .control-caption{display:none}}
+.how-header{flex-wrap:wrap;row-gap:8px}
 </style>
 </head>
 <body>
@@ -265,8 +274,7 @@ window.DOTH={state,products,colors,toast,activePieces,getProd,brl,modeFor,setReb
 const app=window.DOTH,stage=document.getElementById('provador');
 document.getElementById('three-canvas').style.display='none';
 document.getElementById('stage-fallback').style.display='none';
-const legacy=stage.querySelector('.stage-controls');if(legacy)legacy.style.display='none';
-const frame=document.createElement('iframe');frame.src='fitting-room.html?v=13';frame.title='Provador 3D DOTH';frame.loading='eager';frame.setAttribute('allow','fullscreen');frame.style.cssText='position:absolute;inset:0;width:100%;height:100%;border:0;z-index:3;background:transparent';
+const frame=document.createElement('iframe');frame.src='fitting-room.html?v=14&embed=1';frame.title='Provador 3D DOTH';frame.loading='eager';frame.setAttribute('allow','fullscreen');frame.style.cssText='position:absolute;inset:0;width:100%;height:100%;border:0;z-index:3;background:transparent';
 stage.appendChild(frame);
 let isReady=false;
 function sync(){if(isReady)frame.contentWindow.postMessage({source:'doth-site',type:'set-look',look:app.state.look},location.origin)}
@@ -284,7 +292,18 @@ window.addEventListener('message',event=>{
  if(valid){app.state.focus=item.id;app.state.mode=item.mode}
  app.renderUI();app.storeLook();
 });
-window.DOTH_FITTING_ROOM={frame,sync,open:()=>frame.contentWindow};
+// Um único HUD: a barra de câmera da página controla o provador embutido.
+function command(type,extra){if(isReady)frame.contentWindow.postMessage(Object.assign({source:'doth-site',type},extra||{}),location.origin)}
+let spinning=false;
+const bind=(id,fn)=>{const b=document.getElementById(id);if(b)b.addEventListener('click',fn)};
+bind('rot-left',()=>command('rotate',{amount:-Math.PI/6}));
+bind('rot-right',()=>command('rotate',{amount:Math.PI/6}));
+bind('zoom-in',()=>command('zoom',{amount:-1}));
+bind('zoom-out',()=>command('zoom',{amount:1}));
+bind('auto-turn',e=>{spinning=!spinning;e.currentTarget.classList.toggle('on',spinning);e.currentTarget.setAttribute('aria-pressed',String(spinning));command('spin',{value:spinning})});
+bind('reset-view',()=>command('reset'));
+const caption=stage.querySelector('.control-caption');if(caption)caption.textContent='ARRASTE PARA GIRAR · 360°';
+window.DOTH_FITTING_ROOM={frame,sync,command,open:()=>frame.contentWindow};
 })();
 </script>
 <script src="gallery3d.js" defer></script>

@@ -22,6 +22,8 @@ SOURCES={
 # armpit and the top of the shoulder). The mannequin is a single mesh, so the
 # arm is selected by the air gap that separates it from the torso.
 ARM_ABDUCTION_DEG=15.0
+# Shoulder joint, fractions of the source height (also used by fitting-room.html).
+ARM_PIVOT_Y=.765;ARM_PIVOT_X=.118
 def _smooth(a,b,x):
  t=np.clip((x-a)/(b-a),0,1);return t*t*(3-2*t)
 # --- Head proportion ------------------------------------------------------------
@@ -53,7 +55,7 @@ def pose_arms(pos,nor):
  # Fade the rotation in from the top of the shoulder down to the armpit.
  w=arm_w*(1-_smooth(.665,.775,h))*(h>.37)
  # Shoulder joint (pivot), per side.
- py=y0+.765*H;px=.118*H/0.9795
+ py=y0+ARM_PIVOT_Y*H;px=ARM_PIVOT_X*H/0.9795
  out_p=pos.copy();out_n=nor.copy()
  for side in(1,-1):
   sel=(np.sign(pos[:,0])==side)&(w>0)
@@ -64,7 +66,7 @@ def pose_arms(pos,nor):
   out_p[sel,0]=side*px+dx*c-dy*s_;out_p[sel,1]=py+dx*s_+dy*c
   nx,ny=nor[sel,0],nor[sel,1]
   out_n[sel,0]=nx*c-ny*s_;out_n[sel,1]=nx*s_+ny*c
- return out_p.astype(np.float32),out_n.astype(np.float32),arm_w*(h>.37)
+ return out_p.astype(np.float32),out_n.astype(np.float32),arm_w*(h>.37),w
 
 def optimize(key,path):
  t=time.monotonic();orig=(SRC/path).read_bytes();jlen=struct.unpack_from('<I',orig,12)[0];j=json.loads(orig[20:20+jlen]);binoff=20+jlen+8
@@ -72,9 +74,9 @@ def optimize(key,path):
  def attr(index):
   a=j['accessors'][index];view=j['bufferViews'][a['bufferView']];n={'VEC3':3,'VEC2':2,'SCALAR':1}[a['type']];dt={5126:'<f4',5125:'<u4',5123:'<u2'}[a['componentType']];return np.frombuffer(orig,dtype=dt,count=a['count']*n,offset=binoff+view.get('byteOffset',0)+a.get('byteOffset',0)).reshape(-1,n)
  pos=attr(prim['attributes']['POSITION']).copy();nor=attr(prim['attributes']['NORMAL']).copy();uv=attr(prim['attributes']['TEXCOORD_0']).copy();faces=attr(prim['indices']).reshape(-1,3).astype(np.int32,copy=False)
- arm=None
+ arm=None;armw=None
  if key=='mannequin':
-  pos,nor,arm=pose_arms(pos,nor)
+  pos,nor,arm,armw=pose_arms(pos,nor)
   pos=shrink_head(pos)
  # Spatial + UV grouping to preserve material seams. A conservative quantized voxel grid maintains the silhouette while reducing ~1M verts to ~60-120k.
  step=.0055 if key=='mannequin' else (.006 if key.startswith('cap') else .0065)
@@ -98,6 +100,7 @@ def optimize(key,path):
  owner=unique[:,0]
  pnew=cluster_pos[owner];nnew=cluster_nor[owner];unew=avg(uv)
  anew=avg(arm.reshape(-1,1)).reshape(-1) if arm is not None else None
+ wnew=avg(armw.reshape(-1,1)).reshape(-1) if armw is not None else None
  # Degenerate test on the spatial cluster: a triangle collapsed in space is dropped
  # even if its corners kept different UV variants.
  mapped=inv[faces];pm=pinv[faces]
@@ -107,7 +110,7 @@ def optimize(key,path):
  # Remove unused vertices for smaller output
  used,rerank=np.unique(mapped,return_inverse=True)
  pnew=pnew[used];nnew=nnew[used];unew=unew[used];mapped=rerank.reshape(-1,3).astype('<u4')
- if anew is not None:anew=anew[used].astype(np.float32)
+ if anew is not None:anew=anew[used].astype(np.float32);wnew=wnew[used].astype(np.float32)
  print(key,'verts',len(pos),'->',len(pnew),'tri',len(faces),'->',len(mapped),'preprocess',round(time.monotonic()-t,1),flush=True)
  buffers=bytearray();views=[];acc=[];images=[]
  def appendbuf(data):
@@ -119,7 +122,9 @@ def optimize(key,path):
  streams=[('POSITION',pnew,5126,'VEC3'),('NORMAL',nnew,5126,'VEC3'),('TEXCOORD_0',unew,5126,'VEC2'),('indices',mapped.reshape(-1,1),5125,'SCALAR')]
  # Mannequin only: per-vertex arm weight (custom glTF attribute _ARM, loaded by three.js
  # as "_arm"). The fitting room uses it to know which garments may touch the arms.
- if anew is not None:streams.append(('_ARM',anew.reshape(-1,1),5126,'SCALAR'))
+ # _ARMW: full skinning weight of the arm pose (shoulder fade included), used by the
+ # fitting room to open the arms further for wide sleeves.
+ if anew is not None:streams+=[('_ARM',anew.reshape(-1,1),5126,'SCALAR'),('_ARMW',wnew.reshape(-1,1),5126,'SCALAR')]
  for name,arr,comp,typ in streams:
   idx=appendbuf(arr.tobytes());entry={'bufferView':idx,'componentType':comp,'count':len(arr),'type':typ}
   if name=='POSITION':entry.update({'max':pnew.max(axis=0).tolist(),'min':pnew.min(axis=0).tolist()})
@@ -138,7 +143,7 @@ def optimize(key,path):
  'buffers':[{'byteLength':len(buffers)}],'bufferViews':views,'accessors':acc,
  'images':images,'textures':copy.deepcopy(j['textures']),'samplers':copy.deepcopy(j.get('samplers',[])),
  'materials':copy.deepcopy(j['materials']),
- 'meshes':[{'primitives':[{'attributes':dict({'POSITION':0,'NORMAL':1,'TEXCOORD_0':2},**({'_ARM':4} if anew is not None else {})),'indices':3,'material':0,'mode':4}]}]
+ 'meshes':[{'primitives':[{'attributes':dict({'POSITION':0,'NORMAL':1,'TEXCOORD_0':2},**({'_ARM':4,'_ARMW':5} if anew is not None else {})),'indices':3,'material':0,'mode':4}]}]
  }
  # normalTexture remains supported, images are JPEG after conversion.
  jbytes=json.dumps(out,separators=(',',':'),ensure_ascii=True).encode()

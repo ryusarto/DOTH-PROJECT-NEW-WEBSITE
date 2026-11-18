@@ -8,6 +8,10 @@
 #selectors{position:absolute;bottom:17px;left:50%;transform:translateX(-50%);width:min(700px,calc(100% - 24px));display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;pointer-events:auto} .item{border:1px solid #17191864;background:#e4e3dce8;backdrop-filter:blur(8px);padding:11px 8px;min-width:0}.type{font:10px monospace;color:#65665c;margin-bottom:8px}.switch{display:flex;align-items:center;gap:4px;justify-content:space-between}.switch button{width:29px;height:31px;border:1px solid #17191858;background:transparent;flex:none;font-size:18px}.switch button:hover{background:var(--accent)}.name{font-size:11px;font-weight:bold;line-height:1.2;text-align:center;overflow-wrap:anywhere;min-width:0}.ref{font:8px monospace;margin-top:5px;color:#666}
 #camera{position:absolute;top:50%;right:13px;transform:translateY(-50%);pointer-events:auto;display:grid;gap:6px}#camera button{width:39px;height:39px;border:1px solid #17191866;background:#e4e3dce8;font-size:19px}#camera button:hover,#camera button.active{background:var(--accent)}#help{position:absolute;left:20px;bottom:133px;font:10px monospace;color:#555}
 #fallback{position:absolute;inset:0;background:var(--paper);display:none;align-items:center;justify-content:center;flex-direction:column;text-align:center;padding:25px;gap:15px}#fallback img{height:min(65vh,560px);max-width:80vw;object-fit:contain}#fallback p{max-width:420px;font:13px/1.6 Arial}
+/* Embutido na página (index.html): a página já tem o configurador e os controles de
+   câmera; aqui fica só o manequim, sem HUD duplicado sobrepondo o painel. */
+.embed #title,.embed #edition,.embed #badge,.embed #selectors,.embed #camera,.embed #help{display:none}
+.embed #message{top:14px}
 @media(max-width:580px){#title{top:10px;left:11px;font-size:23px}#edition{top:39px;left:11px;font-size:8px}#badge{right:8px;top:10px;font-size:8px;padding:7px}#message{top:64px;font-size:9px}#selectors{bottom:8px;width:calc(100% - 10px);gap:3px}.item{padding:7px 3px}.type{font-size:8px}.name{font-size:9px}.switch{gap:1px}.switch button{width:22px;height:29px}.ref{font-size:7px}#help{left:10px;bottom:106px;font-size:8px}#camera{top:44%;right:7px}#camera button{height:31px;width:31px;font-size:17px}}
 </style>
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/","three-mesh-bvh":"https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.1/build/index.module.js"}}</script>
@@ -22,6 +26,7 @@ import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 import {MeshBVH} from 'three-mesh-bvh';
 const el=id=>document.getElementById(id);
+const EMBED=new URLSearchParams(location.search).has('embed');if(EMBED)document.documentElement.classList.add('embed');
 const options={
 hat:[{label:'SEM BONÉ'},{label:'CAMUFLADO',key:'cap_camo',id:4,mode:'cap'},{label:'XADREZ',key:'cap_plaid',id:5,mode:'cap'},{label:'ONCINHA',key:'cap_leopard',id:6,mode:'cap'},{label:'ONCINHA P&B',key:'cap_leopard',id:7,mode:'cap',mono:true}],
 top:[{label:'SEM CAMISA'},{label:'JAQUETA CREME',key:'jacket_cream',id:3,mode:'shirt'},{label:'RENDA *',key:'jacket_cream',id:2,mode:'shirt',reference:true},{label:'CAMISA MODULAR *',key:'jacket_cream',id:1,mode:'shirt',reference:true}],
@@ -69,12 +74,13 @@ function measureHead(mannequin){
 // a borda de uma peça sem manga dentro do braço era tratada como braço furando a roupa.
 const BODY_TORSO=1,BODY_ARM=2,BODY_HEAD=4;
 // Versão dos GLBs (o manequim mudou de pose e ganhou o atributo _ARM): evita cache antigo.
-const ASSET_VERSION=13;
+const ASSET_VERSION=14;
 const SOURCE_MANNEQUIN_HEIGHT=0.979522705078125;
 const garmentFit={
  // Uniform scales tested with original GLBs in frontal and side views.
  // Shift jacket back without losing the natural, wide shoulder fit.
- jacket_cream:{s:.465,referenceScale:.52,y:.38,z:-.009,anchor:'collar',covers:BODY_TORSO|BODY_ARM},
+ // armPose: graus a mais de abertura dos braços (manga capa larga: o braço sai pela barra).
+ jacket_cream:{s:.465,referenceScale:.52,y:.38,z:-.009,anchor:'collar',covers:BODY_TORSO|BODY_ARM,armPose:13},
  // Keep approved trousers unchanged.
  pants_cargo:{s:.56,y:0,z:0,covers:BODY_TORSO},
  pants_black:{s:.53,y:.005,z:0,covers:BODY_TORSO},
@@ -166,11 +172,39 @@ function positionModel(obj,slot){
 const BODY_GAP=.004,BODY_MAX_IN=.07,BODY_FEATHER=4,BODY_SELF_NEAR=.003,BODY_SEAM=.006,BODY_HIDE_DEPTH=.02,BODY_COVERED=.15;
 const bvhCache=new WeakMap();
 function bvhFor(geometry){let b=bvhCache.get(geometry);if(!b){b=new MeshBVH(geometry);bvhCache.set(geometry,b)}return b}
-function prepareBody(mannequin){
- let mesh=null;mannequin.traverse(c=>{if(c.isMesh&&!mesh)mesh=c});
- if(!mesh)return;
- mesh.geometry=mesh.geometry.clone();// não altera o GLB em cache
- const pos=mesh.geometry.attributes.position,nor=mesh.geometry.attributes.normal,n=pos.count;
+// Pose adaptativa dos braços. O GLB vem com os braços abertos 15° (pose_arms em
+// optimize_models.py, que também grava o peso de skinning _ARMW). Peças de manga larga
+// (garmentFit[..].armPose) abrem os braços mais alguns graus em torno do mesmo ombro,
+// para o antebraço sair pela barra da manga e não pela lateral do tecido.
+const ARM_PIVOT_X=.118,ARM_PIVOT_Y=.765*.9795;// em unidades do GLB, iguais a optimize_models.py
+let bodyMesh=null,bodyBaseGeometry=null;const bodyPoses=new Map();
+function applyArmPose(geometry,deg){
+ const pos=geometry.attributes.position,nor=geometry.attributes.normal,w=geometry.attributes._armw;
+ if(!w||!deg)return;
+ for(let i=0;i<pos.count;i++){
+  const wi=w.getX(i);if(wi<=0)continue;
+  const x=pos.getX(i),side=x<0?-1:1,a=THREE.MathUtils.degToRad(deg)*side*wi,c=Math.cos(a),sn=Math.sin(a);
+  const dx=x-side*ARM_PIVOT_X,dy=pos.getY(i)-ARM_PIVOT_Y;
+  pos.setXY(i,side*ARM_PIVOT_X+dx*c-dy*sn,ARM_PIVOT_Y+dx*sn+dy*c);
+  const nx=nor.getX(i),ny=nor.getY(i);nor.setXY(i,nx*c-ny*sn,nx*sn+ny*c);
+ }
+ pos.needsUpdate=true;nor.needsUpdate=true;geometry.computeBoundingSphere();
+}
+function attachBody(mannequin){
+ mannequin.traverse(c=>{if(c.isMesh&&!bodyMesh)bodyMesh=c});
+ if(!bodyMesh)return;
+ bodyBaseGeometry=bodyMesh.geometry;
+ selectBodyPose(0);
+}
+// Cada ângulo é preparado uma vez (BVH, normais, espessura) e fica em cache.
+function selectBodyPose(extraDeg){
+ if(!bodyMesh)return;
+ let b=bodyPoses.get(extraDeg);
+ if(!b){const geo=bodyBaseGeometry.clone();applyArmPose(geo,extraDeg);b=prepareBody(bodyMesh,geo);bodyPoses.set(extraDeg,b)}
+ body=b;bodyMesh.geometry=b.geometry;
+}
+function prepareBody(mesh,geometry){
+ const pos=geometry.attributes.position,nor=geometry.attributes.normal,n=pos.count;
  // Vértices duplicados em costuras de UV recebem o mesmo deslocamento (sem rachaduras).
  const groupOf=new Int32Array(n),keys=new Map(),gNormal=[];
  for(let i=0;i<n;i++){
@@ -182,7 +216,7 @@ function prepareBody(mannequin){
  for(let i=0;i<n;i++){const g=groupOf[i];gPos[g*3]=pos.getX(i);gPos[g*3+1]=pos.getY(i);gPos[g*3+2]=pos.getZ(i)}
  for(let g=0;g<groups;g++){const x=gNormal[g*3],y=gNormal[g*3+1],z=gNormal[g*3+2],l=Math.hypot(x,y,z)||1;gN[g*3]=x/l;gN[g*3+1]=y/l;gN[g*3+2]=z/l}
  // Vizinhança por grupo para suavizar as bordas do recolhimento.
- const idx=mesh.geometry.index,nb=Array.from({length:groups},()=>new Set());
+ const idx=geometry.index,nb=Array.from({length:groups},()=>new Set());
  if(idx)for(let t=0;t<idx.count;t+=3){const a=groupOf[idx.getX(t)],b=groupOf[idx.getX(t+1)],c=groupOf[idx.getX(t+2)];nb[a].add(b).add(c);nb[b].add(a).add(c);nb[c].add(a).add(b)}
  // BVH do corpo em repouso: detecta quando o raio sai do próprio corpo (mão ao lado
  // do quadril, braço junto ao tronco) antes de chegar à roupa — nesse caso não há invasão.
@@ -226,12 +260,12 @@ function prepareBody(mannequin){
  }
  // Região de cada vértice: braço pelo peso _ARM gravado no GLB (o mesmo da pose em
  // optimize_models.py), cabeça pela altura de referência, o resto é tronco/pernas.
- const region=new Uint8Array(groups),armAttr=mesh.geometry.attributes._arm;
+ const region=new Uint8Array(groups),armAttr=geometry.attributes._arm;
  let minY=Infinity,maxY=-Infinity;for(let g=0;g<groups;g++){minY=Math.min(minY,gPos[g*3+1]);maxY=Math.max(maxY,gPos[g*3+1])}
  for(let i=0;i<n;i++){const g=groupOf[i];const hRef=(gPos[g*3+1]-minY)/SOURCE_MANNEQUIN_HEIGHT;
   region[g]|=armAttr&&armAttr.getX(i)>.5?BODY_ARM:hRef>.855?BODY_HEAD:BODY_TORSO}
  for(let g=0;g<groups;g++)if(region[g]&BODY_ARM)region[g]=BODY_ARM;
- body={mesh,self,thickness,region,restIndex:idx?idx.array.slice():null,rest:pos.array.slice(),groupOf,gPos,gN,neighbors};
+ return {mesh,geometry,self,thickness,region,restIndex:idx?idx.array.slice():null,rest:pos.array.slice(),groupOf,gPos,gN,neighbors};
 }
 // Classifica o caminho do raio dentro do corpo até a roupa:
 // 0 = não sai do corpo antes da roupa (invasão → recolher/ocultar);
@@ -434,16 +468,19 @@ async function put(slot,stamp){
  }catch(err){console.error('DOTH GLB',a.key,err);status('MODELO '+a.key+' NÃO CARREGOU');}
 }
 function emit(slot){const a=option(slot);send('selection',{slot,item:a.key?{id:a.id,mode:a.mode}:null})}
-async function refresh(){const stamp=++revision;drawSelectors();if(!ready)return;status('CARREGANDO PEÇAS 3D…');await Promise.all(slots.map(slot=>put(slot,stamp)));if(stamp===revision){try{conformBody()}catch(err){console.error('DOTH ajuste corpo',err)}status('')}requestDraw()}
+async function refresh(){const stamp=++revision;drawSelectors();if(!ready)return;status('CARREGANDO PEÇAS 3D…');await Promise.all(slots.map(slot=>put(slot,stamp)));if(stamp===revision){try{selectBodyPose(Math.max(0,...slots.map(sl=>attached[sl]?garmentFit[attached[sl].userData.dothKey]?.armPose||0:0)));conformBody()}catch(err){console.error('DOTH ajuste corpo',err)}status('')}requestDraw()}
 function select(slot,direction){selected[slot]=(selected[slot]+direction+options[slot].length)%options[slot].length;if(slot==='full'&&selected.full){selected.top=0;selected.bottom=0}if((slot==='top'||slot==='bottom')&&selected[slot])selected.full=0;refresh();emit(slot);if(slot==='full'&&selected.full){emit('top');emit('bottom')}else if(slot==='top'||slot==='bottom')emit('full')}
 el('selectors').addEventListener('click',e=>{const b=e.target.closest('[data-slot]');if(b)select(b.dataset.slot,Number(b.dataset.dir))});
 function applyParentLook(look){if(!look)return;for(const slot of slots){const p=look[slot];const index=options[slot].findIndex(a=>p&&a.id===p.id&&a.mode===p.mode);selected[slot]=index>=0?index:0}refresh()}
 window.addEventListener('message',e=>{if(e.origin!==location.origin||e.data?.source!=='doth-site')return;if(e.data.type==='set-look')applyParentLook(e.data.look);if(e.data.type==='rotate'){root.rotation.y+=e.data.amount||0;requestDraw()}if(e.data.type==='zoom'){camera.position.multiplyScalar(e.data.amount<0?.9:1.1);requestDraw()}if(e.data.type==='reset')resetCamera();if(e.data.type==='spin'){auto=!!e.data.value;requestDraw()}});
-function resetCamera(){root.rotation.set(0,-.17,0);camera.position.set(0,.2,9.4);controls.target.set(0,0,0);controls.update();requestDraw()}
+// Enquadramento: embutido, o manequim sobe e se afasta um pouco para caber inteiro
+// acima da barra de câmera da página.
+const VIEW=EMBED?{eye:[0,-.1,10.4],target:[0,-.38,0]}:{eye:[0,.2,9.4],target:[0,0,0]};
+function resetCamera(){root.rotation.set(0,-.17,0);camera.position.set(...VIEW.eye);controls.target.set(...VIEW.target);controls.update();requestDraw()}
 function init(){
  try{renderer=new THREE.WebGLRenderer({alpha:true,antialias:true,powerPreference:'low-power',preserveDrawingBuffer:false});renderer.setPixelRatio(Math.min(devicePixelRatio||1,innerWidth<700?1.25:1.5));renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.5;
- el('scene').appendChild(renderer.domElement);scene=new THREE.Scene();scene.background=null;root=new THREE.Group();scene.add(root);camera=new THREE.PerspectiveCamera(35,1,.1,100);camera.position.set(0,.2,9.4);
- controls=new OrbitControls(camera,renderer.domElement);controls.enablePan=false;controls.enableDamping=false;controls.minDistance=4.5;controls.maxDistance=13;controls.minPolarAngle=Math.PI*.31;controls.maxPolarAngle=Math.PI*.69;controls.target.set(0,0,0);controls.addEventListener('change',requestDraw);
+ el('scene').appendChild(renderer.domElement);scene=new THREE.Scene();scene.background=null;root=new THREE.Group();scene.add(root);camera=new THREE.PerspectiveCamera(35,1,.1,100);camera.position.set(...VIEW.eye);
+ controls=new OrbitControls(camera,renderer.domElement);controls.enablePan=false;controls.enableDamping=false;controls.minDistance=4.5;controls.maxDistance=13;controls.minPolarAngle=Math.PI*.31;controls.maxPolarAngle=Math.PI*.69;controls.target.set(...VIEW.target);controls.addEventListener('change',requestDraw);
  scene.add(new THREE.HemisphereLight(0xffffff,0x99978e,2));const light=new THREE.DirectionalLight(0xffffff,2.2);light.position.set(-3,7,6);scene.add(light);const back=new THREE.DirectionalLight(0xffffff,.8);back.position.set(4,4,-5);scene.add(back);
  ready=true;size();return true
  }catch(e){console.error(e);el('fallback').style.display='flex';status('WEBGL INDISPONÍVEL');return false}
@@ -457,5 +494,5 @@ el('reset').onclick=resetCamera;
 document.addEventListener('visibilitychange',()=>{visible=!document.hidden;if(visible)requestDraw();else{cancelAnimationFrame(raf);raf=0}});
 window.addEventListener('resize',()=>{if(renderer){renderer.setPixelRatio(Math.min(devicePixelRatio||1,innerWidth<700?1.25:1.5));size();requestDraw()}});
 drawSelectors();
-if(init()){try{const man=positionModel(await asset('mannequin'),'mannequin');prepareBody(man);root.add(man);status('');requestDraw();send('ready');await refresh()}catch(err){console.error(err);status('MANEQUIM NÃO CARREGOU');el('fallback').style.display='flex'}}
+if(init()){try{const man=positionModel(await asset('mannequin'),'mannequin');attachBody(man);root.add(man);status('');requestDraw();send('ready');await refresh()}catch(err){console.error(err);status('MANEQUIM NÃO CARREGOU');el('fallback').style.display='flex'}}
 </script></body></html>
