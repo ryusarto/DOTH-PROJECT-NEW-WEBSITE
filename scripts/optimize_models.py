@@ -24,6 +24,26 @@ SOURCES={
 ARM_ABDUCTION_DEG=15.0
 def _smooth(a,b,x):
  t=np.clip((x-a)/(b-a),0,1);return t*t*(3-2*t)
+# --- Head proportion ------------------------------------------------------------
+# The source head spans ~15% of the figure (about 6.7 heads tall, head 39% of the
+# shoulder width), which reads as a doll. Adults are ~7.5 heads (13.3%). The head is
+# scaled uniformly around the top of the neck, blending through the neck so the
+# junction stays smooth. Total height drops a little; the fitting room anchors its
+# scale on SOURCE_MANNEQUIN_HEIGHT (the original height), so garment calibration is
+# unchanged.
+HEAD_SCALE=0.88
+def shrink_head(pos):
+ H=float(pos[:,1].max()-pos[:,1].min());y0=float(pos[:,1].min())
+ h=(pos[:,1]-y0)/H
+ w=_smooth(.832,.862,h)
+ if not (w>0).any():return pos
+ # Pivot: centre of the neck at its narrowest section.
+ neck=pos[np.abs(h-.845)<.004]
+ neck=neck[np.abs(neck[:,0])<.07*H/0.9795]
+ piv=np.array([0.0,y0+.845*H,float(neck[:,2].mean())],dtype=np.float64)
+ k=(1-w*(1-HEAD_SCALE))[:,None]
+ return (piv+(pos-piv)*k).astype(np.float32)
+
 def pose_arms(pos,nor):
  H=float(pos[:,1].max()-pos[:,1].min());y0=float(pos[:,1].min())
  h=(pos[:,1]-y0)/H;ax=np.abs(pos[:,0])
@@ -53,7 +73,9 @@ def optimize(key,path):
   a=j['accessors'][index];view=j['bufferViews'][a['bufferView']];n={'VEC3':3,'VEC2':2,'SCALAR':1}[a['type']];dt={5126:'<f4',5125:'<u4',5123:'<u2'}[a['componentType']];return np.frombuffer(orig,dtype=dt,count=a['count']*n,offset=binoff+view.get('byteOffset',0)+a.get('byteOffset',0)).reshape(-1,n)
  pos=attr(prim['attributes']['POSITION']).copy();nor=attr(prim['attributes']['NORMAL']).copy();uv=attr(prim['attributes']['TEXCOORD_0']).copy();faces=attr(prim['indices']).reshape(-1,3).astype(np.int32,copy=False)
  arm=None
- if key=='mannequin':pos,nor,arm=pose_arms(pos,nor)
+ if key=='mannequin':
+  pos,nor,arm=pose_arms(pos,nor)
+  pos=shrink_head(pos)
  # Spatial + UV grouping to preserve material seams. A conservative quantized voxel grid maintains the silhouette while reducing ~1M verts to ~60-120k.
  step=.0055 if key=='mannequin' else (.006 if key.startswith('cap') else .0065)
  qpos=np.round(pos/step).astype(np.int32)

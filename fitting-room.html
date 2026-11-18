@@ -30,11 +30,11 @@ full:[{label:'SEM JARDINEIRA'},{label:'JARDINEIRA CREME',key:'overalls_cream',id
 };
 const slots=['hat','top','bottom','full'],selected={hat:1,top:1,bottom:1,full:0},attached={},cache=new Map(),pending=new Map(),loader=new GLTFLoader();
 let renderer,scene,root,controls,camera,raf=0,auto=false,ready=false,visible=!document.hidden,revision=0,dragged=false;
-let mannequinBounds=null,headBounds=null,body=null;
+let mannequinBounds=null,mannequinRealBounds=null,headBounds=null,body=null;
 // Amostra a geometria original do manequim na região superior, evitando usar
 // a largura dos ombros/corpo para dimensionar bonés.
 function measureHead(mannequin){
- const full=mannequinBounds, height=full.max.y-full.min.y;
+ const full=mannequinRealBounds, height=full.max.y-full.min.y;
  const bands=[[.88,.965],[.86,.96],[.84,.98]];
  mannequin.updateMatrixWorld(true);
  for(const [from,to] of bands){
@@ -69,7 +69,7 @@ function measureHead(mannequin){
 // a borda de uma peça sem manga dentro do braço era tratada como braço furando a roupa.
 const BODY_TORSO=1,BODY_ARM=2,BODY_HEAD=4;
 // Versão dos GLBs (o manequim mudou de pose e ganhou o atributo _ARM): evita cache antigo.
-const ASSET_VERSION=12;
+const ASSET_VERSION=13;
 const SOURCE_MANNEQUIN_HEIGHT=0.979522705078125;
 const garmentFit={
  // Uniform scales tested with original GLBs in frontal and side views.
@@ -100,11 +100,16 @@ function positionModel(obj,slot){
  const center=sourceBox.getCenter(new THREE.Vector3());
  if(!size.y||!Number.isFinite(size.y))throw Error('GLB inválido: dimensões não finitas');
  if(slot==='mannequin'){
-  const uniform=4.7/size.y;
+  // Escala ancorada na altura ORIGINAL do manequim (do pé ao topo da cabeça antes da
+  // correção de proporção): a cabeça foi reduzida em optimize_models.py, e toda a
+  // calibração das roupas (garmentFit) é relativa a essa altura de referência.
+  const uniform=4.7/SOURCE_MANNEQUIN_HEIGHT;
   obj.scale.setScalar(uniform);
-  obj.position.set(-center.x*uniform,-center.y*uniform,-center.z*uniform);
+  obj.position.set(-center.x*uniform,-(sourceBox.min.y+SOURCE_MANNEQUIN_HEIGHT/2)*uniform,-center.z*uniform);
   obj.updateMatrixWorld(true);
-  mannequinBounds=new THREE.Box3().setFromObject(obj);
+  mannequinRealBounds=new THREE.Box3().setFromObject(obj);
+  mannequinBounds=mannequinRealBounds.clone();
+  mannequinBounds.max.y=mannequinBounds.min.y+4.7;
   headBounds=measureHead(obj);
   return obj;
  }
@@ -127,7 +132,7 @@ function positionModel(obj,slot){
   obj.position.x+=headCenter.x-capCenter.x;
   obj.position.z+=headCenter.z+headSize.z*fit.front-capCenter.z;
   // Coroa apenas acima do topo da cabeça; a aba se estende naturalmente à frente.
-  obj.position.y+=mannequinBounds.max.y-height*(fit.crownDrop??0)-capBox.max.y;
+  obj.position.y+=mannequinRealBounds.max.y-height*(fit.crownDrop??0)-capBox.max.y;
   return obj;
  }
  const bodySize=mannequinBounds.getSize(new THREE.Vector3());
@@ -220,11 +225,11 @@ function prepareBody(mannequin){
   const h=self.raycastFirst(r,THREE.DoubleSide,BODY_SELF_NEAR,.2);thickness[g]=h?h.distance:.2;
  }
  // Região de cada vértice: braço pelo peso _ARM gravado no GLB (o mesmo da pose em
- // optimize_models.py), cabeça pela altura, o resto é tronco/pernas.
+ // optimize_models.py), cabeça pela altura de referência, o resto é tronco/pernas.
  const region=new Uint8Array(groups),armAttr=mesh.geometry.attributes._arm;
  let minY=Infinity,maxY=-Infinity;for(let g=0;g<groups;g++){minY=Math.min(minY,gPos[g*3+1]);maxY=Math.max(maxY,gPos[g*3+1])}
- for(let i=0;i<n;i++){const g=groupOf[i];const h=(gPos[g*3+1]-minY)/(maxY-minY);
-  region[g]|=armAttr&&armAttr.getX(i)>.5?BODY_ARM:h>.865?BODY_HEAD:BODY_TORSO}
+ for(let i=0;i<n;i++){const g=groupOf[i];const hRef=(gPos[g*3+1]-minY)/SOURCE_MANNEQUIN_HEIGHT;
+  region[g]|=armAttr&&armAttr.getX(i)>.5?BODY_ARM:hRef>.855?BODY_HEAD:BODY_TORSO}
  for(let g=0;g<groups;g++)if(region[g]&BODY_ARM)region[g]=BODY_ARM;
  body={mesh,self,thickness,region,restIndex:idx?idx.array.slice():null,rest:pos.array.slice(),groupOf,gPos,gN,neighbors};
 }
